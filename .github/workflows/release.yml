@@ -154,3 +154,21 @@ jobs:
           expect_refusal "no matching CertificateIdentity|expected SAN" \
             cosign verify --certificate-identity "https://github.com/someone-else/app/.github/workflows/release.yml@refs/heads/main" \
               --certificate-oidc-issuer "$ISSUER" "$REF"
+
+  public:
+    name: Anyone can pull and verify the image
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      REF: ghcr.io/kurtis-h/supply-chain-lab@${{ needs.publish.outputs.digest }}
+    steps:
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+      - name: Pull and verify without logging in, as a stranger would
+        run: |
+          docker pull "$REF" > /dev/null || {
+            echo "::error::the image isn't public. Make the package public in its settings so anyone can verify it."; exit 1; }
+          cosign verify --certificate-identity "$SIGNER" --certificate-oidc-issuer "$ISSUER" "$REF" > /dev/null
+          echo "Pulled and verified anonymously."
