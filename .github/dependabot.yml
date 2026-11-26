@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Keeps the hash-pinned lockfiles current (Dependabot regenerates hashes).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+        update-types: [minor, patch]
+  # Moves the base image digest when a patched image is published.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  # Updates SHA-pinned actions and keeps the "# vX.Y.Z" comments in step.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
