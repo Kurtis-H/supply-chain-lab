@@ -1,0 +1,5 @@
+-c requirements.txt
+pytest
+httpx
+# Needed to build the demo package from source in the tests.
+setuptools

@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests and pin checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install (every package checked against its pinned hash)
+        run: pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+      - name: Tests, including the malicious-dependency demo
+        run: python -m pytest -v
+      - name: Everything is pinned (actions by SHA, images by digest, packages by hash)
+        run: python scripts/check_pins.py
+
+  image:
+    name: Image, SBOM and vulnerability gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: supply-chain-lab:ci
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      - name: Smoke test the image
+        run: |
+          docker run -d --name app -p 8080:8080 supply-chain-lab:ci
+          for i in $(seq 1 30); do curl -sf localhost:8080/health && break; sleep 1; done
+          test "$(curl -sf localhost:8080/version | jq -r .commit)" = "$GITHUB_SHA"
+          test "$(docker exec app id -u)" = 65534 || { echo "::error::the image runs as root"; exit 1; }
+      - name: SBOM (everything inside the image)
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          image: supply-chain-lab:ci
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+      - name: Vulnerability gate (fail on fixable high or critical)
+        uses: anchore/scan-action@11983a512817154c80a9db660c1a184be7513ed6 # v7.4.3
+        with:
+          sbom: sbom.spdx.json
+          fail-build: true
+          severity-cutoff: high
+          # Only fail for vulnerabilities that have a fix to upgrade to;
+          # unfixable ones in the base image are reported but can't be acted on.
+          only-fixed: true
+          output-format: table

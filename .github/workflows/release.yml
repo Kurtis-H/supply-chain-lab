@@ -1,0 +1,150 @@
+name: Release
+
+# Publishes the image to GHCR, signs it with Sigstore (keyless: the identity
+# is this workflow, vouched for by GitHub's OIDC token, so there is no private
+# key to leak), attaches the SBOM and SLSA build provenance, then checks
+# that a deploy gate accepts it and rejects anything tampered with.
+#
+# Runs on pull requests too (tagged pr-<n>), so the whole chain is proven
+# before merge. Pull requests from forks can't publish and skip it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/kurtis-h/supply-chain-lab
+  # The identity a deploy should trust: this repo's release workflow.
+  SIGNER: https://github.com/${{ github.workflow_ref }}
+  ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  publish:
+    name: Publish, sign and attest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+            ${{ env.IMAGE }}:${{ github.event_name == 'push' && 'latest' || format('pr-{0}', github.event.number) }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+      - name: Sign the image (keyless)
+        run: cosign sign --yes "$IMAGE@${{ steps.build.outputs.digest }}"
+      - name: SBOM
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+      - name: Attach the SBOM as a signed attestation
+        run: cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$IMAGE@${{ steps.build.outputs.digest }}"
+      - name: SLSA build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  accept:
+    name: Deploy gate accepts the signed image
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    env:
+      REF: ghcr.io/kurtis-h/supply-chain-lab@${{ needs.publish.outputs.digest }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Signed by this repo's release workflow
+        run: cosign verify --certificate-identity "$SIGNER" --certificate-oidc-issuer "$ISSUER" "$REF" > /dev/null
+      - name: Has a signed SBOM
+        run: cosign verify-attestation --type spdxjson --certificate-identity "$SIGNER" --certificate-oidc-issuer "$ISSUER" "$REF" > /dev/null
+      - name: Has SLSA provenance from this repo
+        run: gh attestation verify "oci://$REF" --repo "$GITHUB_REPOSITORY"
+      - name: The running image says which commit built it
+        run: |
+          docker run -d -p 8080:8080 "$REF"
+          for i in $(seq 1 30); do curl -sf localhost:8080/health && break; sleep 1; done
+          test "$(curl -sf localhost:8080/version | jq -r .commit)" = "$GITHUB_SHA"
+
+  reject:
+    name: Deploy gate rejects tampered and foreign images
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REF: ghcr.io/kurtis-h/supply-chain-lab@${{ needs.publish.outputs.digest }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tamper with the image (add a file) and push it unsigned
+        run: |
+          printf 'FROM %s\nRUN echo "pretend backdoor" > /tmp/backdoor\n' "$REF" | docker build -t "$IMAGE:tampered" -
+          docker push "$IMAGE:tampered"
+          echo "TAMPERED=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:tampered")" >> "$GITHUB_ENV"
+      - name: The gate refuses the tampered image
+        run: |
+          if cosign verify --certificate-identity "$SIGNER" --certificate-oidc-issuer "$ISSUER" "$TAMPERED"; then
+            echo "::error::an unsigned, tampered image passed signature verification"; exit 1
+          fi
+          if gh attestation verify "oci://$TAMPERED" --repo "$GITHUB_REPOSITORY"; then
+            echo "::error::a tampered image passed provenance verification"; exit 1
+          fi
+      - name: The gate refuses a genuine signature from someone else
+        run: |
+          # The real image, but the gate expects a different signer (another
+          # repo's workflow), as when a deploy only trusts its own builds.
+          if cosign verify --certificate-identity "https://github.com/someone-else/app/.github/workflows/release.yml@refs/heads/main" --certificate-oidc-issuer "$ISSUER" "$REF"; then
+            echo "::error::verification accepted the wrong signer"; exit 1
+          fi
