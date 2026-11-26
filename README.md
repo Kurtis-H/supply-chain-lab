@@ -16,7 +16,7 @@ Everything here is free: GitHub Actions, GitHub Container Registry, Sigstore, Sy
 | A package is swapped for a different file with the same name and version | `requirements.txt` pins a SHA-256 for every file; installs use `--require-hashes` | Same tests: a mismatched archive is refused before any code runs |
 | An action's tag is moved to malicious code (as in the 2025 tj-actions compromise) | Every action pinned to a full commit SHA | [`scripts/check_pins.py`](scripts/check_pins.py) fails CI on any tag-only `uses:` |
 | A base image tag is re-pushed with different contents | `FROM` pinned by digest | Same check |
-| Shipping known vulnerabilities | SBOM (Syft) scanned by Grype; CI fails on fixable high or critical | The *Image, SBOM and vulnerability gate* job |
+| Shipping known vulnerabilities | SBOM (Syft) scanned by Grype; CI fails on fixable high or critical | The *Image, SBOM and vulnerability gate* job. On the first build: 238 matches across 116 packages (mostly medium, in the base OS and Python), none of them fixable at high or critical |
 | An attacker pushes their own image to the registry | Keyless signing with cosign; the gate trusts only this repo's release workflow | *Deploy gate rejects tampered and foreign images*: an unsigned, tampered image is refused |
 | Someone signs with their own valid identity | The gate checks **who** signed, not just that something was signed | Same job: the real signature, checked against a different expected signer, is refused |
 | "What exactly is running, and where did it come from?" | SLSA build provenance and a signed SBOM attached to the image; the image reports its own commit | *Deploy gate accepts the signed image*: `gh attestation verify`, `cosign verify-attestation`, and `/version` matching the commit |
@@ -47,9 +47,10 @@ No single setting covers everything, which is why the image build uses **both** 
 2. **Sign** the image digest with `cosign sign`. It's keyless: GitHub's OIDC token proves the signer is this repo's release workflow, Sigstore's Fulcio issues a short-lived certificate for that identity, and the signature is recorded in the Rekor transparency log. There is no private key to steal.
 3. **Attest** the SBOM (`cosign attest --type spdxjson`) and the build provenance (`actions/attest-build-provenance`, SLSA v1).
 4. **Deploy gate, accept:** verify the signature *and* the signer's identity, the SBOM attestation, and the provenance, then run the image and check it reports the commit that built it.
-5. **Deploy gate, reject:** build a tampered copy (one extra file) and push it unsigned. The gate must refuse it, and must refuse the genuine image when expecting a different signer.
+5. **Deploy gate, reject:** build a tampered copy (one extra file) and push it unsigned. The gate must refuse it, and must refuse the genuine image when expecting a different signer. Each refusal must give the **expected reason** ("no signatures found", no attestation, "expected SAN"). A network or login error would also fail a check, and on its own would prove nothing.
+6. **Anyone can verify:** pull and verify the image with no login at all, the way a stranger would.
 
-Steps 4 and 5 run on every pull request too, so the chain is proven before merge.
+Steps 4 to 6 run on every pull request too, so the chain is proven before merge.
 
 ### Verify an image yourself
 
