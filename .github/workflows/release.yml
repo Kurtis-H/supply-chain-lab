@@ -133,18 +133,24 @@ jobs:
           printf 'FROM %s\nRUN echo "pretend backdoor" > /tmp/backdoor\n' "$REF" | docker build -t "$IMAGE:tampered" -
           docker push "$IMAGE:tampered"
           echo "TAMPERED=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:tampered")" >> "$GITHUB_ENV"
-      - name: The gate refuses the tampered image
+      - name: The gate refuses the tampered image, for the right reasons
         run: |
-          if cosign verify --certificate-identity "$SIGNER" --certificate-oidc-issuer "$ISSUER" "$TAMPERED"; then
-            echo "::error::an unsigned, tampered image passed signature verification"; exit 1
-          fi
-          if gh attestation verify "oci://$TAMPERED" --repo "$GITHUB_REPOSITORY"; then
-            echo "::error::a tampered image passed provenance verification"; exit 1
-          fi
-      - name: The gate refuses a genuine signature from someone else
-        run: |
+          # A negative check must fail for the expected reason; a network or
+          # auth error would also "fail" and prove nothing.
+          expect_refusal() {  # expect_refusal <reason-regex> <command...>
+            local reason="$1"; shift
+            if out=$("$@" 2>&1); then
+              echo "::error::accepted when it should have been refused: $*"; echo "$out"; exit 1
+            fi
+            echo "$out" | grep -Eq "$reason" || { echo "::error::refused, but not because of: $reason"; echo "$out"; exit 1; }
+            echo "Refused as expected ($reason)"
+          }
+          expect_refusal "no signatures found" \
+            cosign verify --certificate-identity "$SIGNER" --certificate-oidc-issuer "$ISSUER" "$TAMPERED"
+          expect_refusal "HTTP 404|no attestations" \
+            gh attestation verify "oci://$TAMPERED" --repo "$GITHUB_REPOSITORY"
           # The real image, but the gate expects a different signer (another
           # repo's workflow), as when a deploy only trusts its own builds.
-          if cosign verify --certificate-identity "https://github.com/someone-else/app/.github/workflows/release.yml@refs/heads/main" --certificate-oidc-issuer "$ISSUER" "$REF"; then
-            echo "::error::verification accepted the wrong signer"; exit 1
-          fi
+          expect_refusal "no matching CertificateIdentity|expected SAN" \
+            cosign verify --certificate-identity "https://github.com/someone-else/app/.github/workflows/release.yml@refs/heads/main" \
+              --certificate-oidc-issuer "$ISSUER" "$REF"
