@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1
 # Base images are pinned by digest (scripts/check_pins.py enforces it), so a
-# re-pushed tag can't change what gets built. Dependabot bumps the digest.
-ARG PYTHON_IMAGE=python:3.12-slim@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
-
-FROM ${PYTHON_IMAGE} AS build
+# re-pushed tag can't change what gets built. Dependabot bumps the digest
+# (it updates FROM lines, so the image is written out in each one).
+FROM python:3.12-slim@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b AS build
 WORKDIR /build
 COPY requirements.txt .
 # --require-hashes: every package must match a hash in the lockfile.
@@ -11,7 +10,7 @@ COPY requirements.txt .
 RUN python -m venv /venv \
  && /venv/bin/pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.txt
 
-FROM ${PYTHON_IMAGE}
+FROM python:3.12-slim@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
 ARG GIT_SHA=unknown
 ARG BUILD_URL=unknown
 ENV GIT_SHA=${GIT_SHA} BUILD_URL=${BUILD_URL} PATH=/venv/bin:$PATH PYTHONDONTWRITEBYTECODE=1
