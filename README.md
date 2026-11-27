@@ -4,15 +4,15 @@
 [![Release](https://github.com/Kurtis-H/supply-chain-lab/actions/workflows/release.yml/badge.svg)](https://github.com/Kurtis-H/supply-chain-lab/actions/workflows/release.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Kurtis-H/supply-chain-lab/badge)](https://scorecard.dev/viewer/?uri=github.com/Kurtis-H/supply-chain-lab)
 
-**Software supply-chain security, demonstrated and proven in CI.** A small service is built into a container image that comes with a full list of its contents (SBOM), a vulnerability gate, a keyless signature, and SLSA build provenance. A deploy gate accepts it, and CI proves the gate **rejects** tampered images and signatures from anyone else. A harmless "malicious" package shows what a real attack can do at install time, and which defences stop it.
+**Software supply-chain security, demonstrated and proven in CI.** A small service is built into a container image that comes with a full list of its contents (SBOM), a vulnerability gate, a keyless signature, and SLSA build provenance. A deploy gate accepts it, and CI proves the gate **rejects** tampered images and signatures from anyone else. A harmless "malicious" package shows what a real attack can do at install time, and which defenses stop it.
 
 Everything here is free: GitHub Actions, GitHub Container Registry, Sigstore, Syft, Grype and OpenSSF Scorecard.
 
-## Threats, defences, and the proof
+## Threats, defenses, and the proof
 
-| Threat | Defence here | Proven by |
+| Threat | Defense here | Proven by |
 |---|---|---|
-| A dependency runs code the moment it's installed (typosquats, hijacked packages) | Wheels only (`--only-binary`), hash-pinned lockfile, `npm --ignore-scripts` | [`tests/test_malicious_dependency.py`](tests/test_malicious_dependency.py): the attack works unprotected, and each defence blocks it |
+| A dependency runs code the moment it's installed (typosquats, hijacked packages) | Wheels only (`--only-binary`), hash-pinned lockfile, `npm --ignore-scripts` | [`tests/test_malicious_dependency.py`](tests/test_malicious_dependency.py): the attack works unprotected, and each defense blocks it |
 | A package is swapped for a different file with the same name and version | `requirements.txt` pins a SHA-256 for every file; installs use `--require-hashes` | Same tests: a mismatched archive is refused before any code runs |
 | An action's tag is moved to malicious code (as in the 2025 tj-actions compromise) | Every action pinned to a full commit SHA | [`scripts/check_pins.py`](scripts/check_pins.py) fails CI on any tag-only `uses:` |
 | A base image tag is re-pushed with different contents | `FROM` pinned by digest | Same check |
